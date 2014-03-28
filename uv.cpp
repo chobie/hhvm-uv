@@ -20,6 +20,7 @@ class UVResource : public SweepableResourceData {
   uv_timer_t timer;
   enum UVResourceType type;
   Variant callback;
+
 public:
   explicit UVResource();
   explicit UVResource(UVResourceType type, uv_loop_t *loop);
@@ -123,8 +124,10 @@ static Variant HHVM_FUNCTION(uv_default_loop) {
 
 static void php_uv_timer_cb(uv_timer_t *handle, int status)
 {
-	UVResource *uv = (UVResource*)handle->data;
+  UVResource *uv = (UVResource*)handle->data;
   Array ret = Array::Create();
+  Variant resource = Resource(uv);
+  ret.add(ret, resource, true);
 
   vm_call_user_func(uv->GetCallback(), ret);
 }
@@ -139,6 +142,36 @@ static void HHVM_FUNCTION(uv_timer_start,
   return;
 }
 
+static void HHVM_FUNCTION(uv_timer_stop, const Resource& res_timer)
+{
+  UVResource *timer = UVResource::Get(res_timer);
+
+  uv_timer_stop(timer->GetTimer());
+}
+
+static void HHVM_FUNCTION(uv_timer_again, const Resource& res_timer)
+{
+  UVResource *timer = UVResource::Get(res_timer);
+
+  uv_timer_again(timer->GetTimer());
+}
+
+static void HHVM_FUNCTION(uv_timer_set_repeat, const Resource& res_timer, int64_t repeat)
+{
+  UVResource *timer = UVResource::Get(res_timer);
+
+  uv_timer_set_repeat(timer->GetTimer(), repeat);
+}
+
+static int64_t HHVM_FUNCTION(uv_timer_get_repeat, const Resource& res_timer)
+{
+  UVResource *timer = UVResource::Get(res_timer);
+  int64_t repeat = 0;
+
+  repeat = uv_timer_get_repeat(timer->GetTimer());
+
+  return repeat;
+}
 
 namespace {
 static class UvExtension : public Extension {
@@ -148,6 +181,10 @@ static class UvExtension : public Extension {
   virtual void moduleInit() {
     HHVM_FE(uv_timer_init);
     HHVM_FE(uv_timer_start);
+    HHVM_FE(uv_timer_stop);
+    HHVM_FE(uv_timer_again);
+    HHVM_FE(uv_timer_set_repeat);
+    HHVM_FE(uv_timer_get_repeat);
     HHVM_FE(uv_run);
     HHVM_FE(uv_default_loop);
 
