@@ -50,3 +50,12 @@ function uv_listen(resource $server, int $backlog, mixed $callable): void;
 
 <<__Native>>
 function uv_read_start(resource $handle, mixed $callable): void;
+
+<<__Native>>
+function uv_shutdown(resource $handle, mixed $callable = NULL): void;
+
+<<__Native>>
+function uv_close(resource $handle, mixed $callable = NULL): void;
+
+<<__Native>>
+function uv_write(resource $handle, string $buffer, mixed $callable = NULL): void;

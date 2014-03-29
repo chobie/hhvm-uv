@@ -16,6 +16,8 @@ enum UVResourceType : long {
   TYPE_TIMER,
   TYPE_TCP,
   TYPE_ADDR,
+  TYPE_SHUTDOWN,
+  TYPE_WRITE_REQ,
 };
 
 typedef struct {
@@ -27,6 +29,10 @@ typedef struct {
   } addr;
 } php_uv_sockaddr_t;
 
+typedef struct {
+  uv_write_t req;
+  uv_buf_t buf;
+} write_req_t;
 
 class UVHttpParserResource : public SweepableResourceData {
   DECLARE_RESOURCE_ALLOCATION(UVHttpParserResource);
@@ -63,11 +69,17 @@ public:
   enum UVResourceType m_type;
   uv_timer_t timer;
   uv_tcp_t m_tcp;
+  uv_shutdown_t m_shutdown;
+  write_req_t m_write_req;
   php_uv_sockaddr_t m_sockaddr;
   Variant callback;
   Variant m_read_cb;
+  Variant m_shutdown_cb;
+  Variant m_close_cb;
+  Variant m_write_cb;
 
   explicit UVResource();
+  explicit UVResource(UVResourceType type);
   explicit UVResource(String address, int64_t port);
   explicit UVResource(UVResourceType type, uv_loop_t *loop);
   ~UVResource();
@@ -137,6 +149,16 @@ UVResource::UVResource(UVResourceType type, uv_loop_t *loop) {
   }
   m_type = type;
 
+}
+
+UVResource::UVResource(UVResourceType type) {
+  if (type == TYPE_SHUTDOWN) {
+    m_shutdown.data = this;
+  } else if (type == TYPE_WRITE_REQ) {
+    m_write_req.req.data = this;
+  }
+
+  m_type = type;
 }
 
 UVResource::UVResource(String address, int64_t port) {
@@ -308,6 +330,7 @@ UVHttpParserResource::UVHttpParserResource(int64_t target)
 
   m_headers = Array::Create();
   memset(&m_handle, 0, sizeof(struct http_parser_url));
+  m_tmp = NULL;
 
   /* setup callback */
   m_settings.on_message_begin = on_message_begin;
@@ -441,19 +464,25 @@ static Variant HHVM_FUNCTION(uv_http_parser_execute, const Resource& res_parser,
     return false;
   }
 
-  if (parser->m_is_response == 0) {
-    result.add(String("REQUEST_METHOD"), String(const_cast<char*>(http_method_str(static_cast<http_method>(parser->m_parser.method)))));
+  if (parser->m_finished == 1) {
+    if (parser->m_is_response == 0) {
+      result.add(String("REQUEST_METHOD"), String(const_cast<char*>(http_method_str(static_cast<http_method>(parser->m_parser.method)))));
+    } else {
+      result.add(String("STATUS_CODE"), static_cast<int64_t>(parser->m_parser.status_code));
+    }
+    result.add(String("UPGRADE"), static_cast<int64_t>(parser->m_parser.upgrade));
+
+    snprintf(version_buffer, 4, "%d.%d", parser->m_parser.http_major, parser->m_parser.http_minor);
+    parser->m_headers.add(String("VERSION"), String(version_buffer));
+    result.add(String("HEADERS"), parser->m_headers);
+    arr = result;
+    return true;
   } else {
-    result.add(String("STATUS_CODE"), static_cast<int64_t>(parser->m_parser.status_code));
+    return false;
   }
-  result.add(String("UPGRADE"), static_cast<int64_t>(parser->m_parser.upgrade));
 
-  snprintf(version_buffer, 4, "%d.%d", parser->m_parser.http_major, parser->m_parser.http_minor);
-  result.add(String("VERSION"), String(version_buffer));
-  result.add(String("HEADERS"), parser->m_headers);
 
-  arr = result;
-  return true;
+
 }
 
 // Tcp
@@ -561,7 +590,12 @@ static void php_uv_read_cb(uv_stream_t* handle, ssize_t nread, uv_buf_t buf)
 
   ret.append(Resource(uv));
   ret.append(static_cast<int64_t>(nread));
-  ret.append(String(buf.base, nread, CopyString));
+
+  if (nread > 0) {
+    ret.append(String(buf.base, nread, CopyString));
+  } else {
+    ret.append(NULL);
+  }
 
   vm_call_user_func(uv->m_read_cb, ret);
 }
@@ -572,14 +606,97 @@ static void HHVM_FUNCTION(uv_read_start, Resource res_handle, Variant callable) 
 
   ResourceData *data = res_handle.get();
   data->incRefCount();
-//  Object obj = callable.toObject();
-//  obj->incRefCount();
   uv->m_read_cb = callable;
 
   r = uv_read_start(reinterpret_cast<uv_stream_t*>(&uv->m_tcp),
     php_uv_read_alloc,
     php_uv_read_cb
   );
+}
+
+static void php_uv_shutdown_cb(uv_shutdown_t* handle, int status)
+{
+  UVResource *uv = static_cast<UVResource*>(handle->data);
+  if (!uv->m_shutdown_cb.isNull()) {
+    Array ret = Array::Create();
+
+    ret.append(Resource(uv));
+    ret.append(static_cast<int64_t>(status));
+    vm_call_user_func(uv->m_shutdown_cb, ret);
+  }
+}
+
+
+static void HHVM_FUNCTION(uv_shutdown, Resource res_handle, Variant callable) {
+  UVResource *uv = UVResource::Get(res_handle);
+  UVResource *shutdown = nullptr;
+  shutdown = NEWOBJ(UVResource)(TYPE_SHUTDOWN);
+
+  int r;
+
+  if (!callable.isNull()) {
+    shutdown->m_shutdown_cb = callable;
+  }
+  shutdown->m_shutdown.data = uv;
+
+  r = uv_shutdown(
+    &shutdown->m_shutdown,
+    reinterpret_cast<uv_stream_t*>(&uv->m_tcp),
+    php_uv_shutdown_cb
+  );
+}
+
+static void php_uv_close_cb(uv_handle_t* handle)
+{
+  UVResource *uv = static_cast<UVResource*>(handle->data);
+  Array ret = Array::Create();
+
+  ret.append(Resource(uv));
+
+  if (!uv->m_close_cb.isNull()) {
+    vm_call_user_func(uv->m_close_cb, ret);
+  }
+}
+
+static void HHVM_FUNCTION(uv_close, Resource res_handle, Variant callable) {
+  UVResource *uv = UVResource::Get(res_handle);
+  int r;
+
+  if (!callable.isNull()) {
+    uv->m_close_cb = callable;
+  }
+
+  uv_close(reinterpret_cast<uv_handle_t*>(&uv->m_tcp), php_uv_close_cb);
+}
+
+static void php_uv_write_cb(uv_write_t* req, int status)
+{
+  write_req_t* wr = (write_req_t*) req;
+  UVResource *uv = static_cast<UVResource*>(req->handle->data);
+  Array ret = Array::Create();
+
+  ret.append(Resource(uv));
+  ret.append(static_cast<int64_t>(status));
+
+  if (!uv->m_write_cb.isNull()) {
+    vm_call_user_func(uv->m_write_cb, ret);
+  }
+}
+
+static void HHVM_FUNCTION(uv_write, Resource res_handle, const String& data, Variant callable) {
+  UVResource *uv = UVResource::Get(res_handle);
+  UVResource *w = NEWOBJ(UVResource)(TYPE_WRITE_REQ);
+  int r;
+
+  if (!callable.isNull()) {
+    uv->m_write_cb = callable;
+  }
+  w->m_write_req.buf = uv_buf_init(const_cast<char*>(data.c_str()), data.length());
+
+  uv_write(
+    &w->m_write_req.req,
+    reinterpret_cast<uv_stream_t*>(&uv->m_tcp),
+    &w->m_write_req.buf, 1, php_uv_write_cb);
 }
 
 
@@ -600,6 +717,9 @@ static class UvExtension : public Extension {
     HHVM_FE(uv_listen);
 
     HHVM_FE(uv_read_start);
+    HHVM_FE(uv_write);
+    HHVM_FE(uv_shutdown);
+    HHVM_FE(uv_close);
 
     // Timer
     HHVM_FE(uv_timer_init);
