@@ -14,7 +14,19 @@ namespace {
 
 enum UVResourceType : long {
   TYPE_TIMER,
+  TYPE_TCP,
+  TYPE_ADDR,
 };
+
+typedef struct {
+  int is_ipv4;
+  int resource_id;
+  union {
+    struct sockaddr_in ipv4;
+    struct sockaddr_in6 ipv6;
+  } addr;
+} php_uv_sockaddr_t;
+
 
 class UVHttpParserResource : public SweepableResourceData {
   DECLARE_RESOURCE_ALLOCATION(UVHttpParserResource);
@@ -47,12 +59,16 @@ public:
 
 class UVResource : public SweepableResourceData {
   DECLARE_RESOURCE_ALLOCATION(UVResource);
-  uv_timer_t timer;
-  enum UVResourceType type;
-  Variant callback;
-
 public:
+  enum UVResourceType m_type;
+  uv_timer_t timer;
+  uv_tcp_t m_tcp;
+  php_uv_sockaddr_t m_sockaddr;
+  Variant callback;
+  Variant m_read_cb;
+
   explicit UVResource();
+  explicit UVResource(String address, int64_t port);
   explicit UVResource(UVResourceType type, uv_loop_t *loop);
   ~UVResource();
   static StaticString s_class_name;
@@ -115,7 +131,18 @@ UVResource::UVResource(UVResourceType type, uv_loop_t *loop) {
   if (type == TYPE_TIMER) {
      uv_timer_init(loop, &this->timer);
      this->timer.data = this;
+  } else if (type == TYPE_TCP) {
+    uv_tcp_init(loop, &m_tcp);
+    m_tcp.data = this;
   }
+  m_type = type;
+
+}
+
+UVResource::UVResource(String address, int64_t port) {
+  m_sockaddr.is_ipv4 = 1;
+  m_type = TYPE_ADDR;
+  m_sockaddr.addr.ipv4 = uv_ip4_addr(address.c_str(), static_cast<int>(port));
 }
 
 UVResource::~UVResource() {
@@ -134,6 +161,16 @@ UVHttpParserResource *UVHttpParserResource::Get(const Variant& resource) {
 }
 
 void UVHttpParserResource::sweep() {
+}
+
+
+static const char* php_uv_strerror(int error_code)
+{
+  uv_err_t error;
+  error.code = static_cast<uv_err_code>(error_code);
+
+  /* Note: uv_strerror doesn't use assert. we don't need check value here */
+  return uv_strerror(error);
 }
 
 
@@ -363,6 +400,7 @@ static void HHVM_FUNCTION(uv_timer_set_repeat, const Resource& res_timer, int64_
 static int64_t HHVM_FUNCTION(uv_timer_get_repeat, const Resource& res_timer)
 {
   UVResource *timer = UVResource::Get(res_timer);
+
   int64_t repeat = 0;
 
   repeat = uv_timer_get_repeat(timer->GetTimer());
@@ -418,6 +456,132 @@ static Variant HHVM_FUNCTION(uv_http_parser_execute, const Resource& res_parser,
   return true;
 }
 
+// Tcp
+static Variant HHVM_FUNCTION(uv_tcp_init, const Resource& res_loop) {
+  UVResource *uv = nullptr;
+  uv_loop_t *loop = NULL;
+
+  loop = uv_default_loop();
+  uv = NEWOBJ(UVResource)(TYPE_TCP, loop);
+
+  return Resource(uv);
+}
+
+static void HHVM_FUNCTION(uv_tcp_nodelay, const Resource& res_tcp, bool bval) {
+  UVResource *tcp = UVResource::Get(res_tcp);
+  uv_tcp_nodelay(&tcp->m_tcp, static_cast<int>(bval));
+}
+
+static bool HHVM_FUNCTION(uv_accept, const Resource& res_server, const Resource& res_client) {
+  UVResource *server = UVResource::Get(res_server);
+  UVResource *client = UVResource::Get(res_client);
+  int r;
+
+  if (server->m_type == TYPE_TCP && client->m_type != TYPE_TCP) {
+    return false;
+  }
+
+  r = uv_accept(
+    reinterpret_cast<uv_stream_t *>(&server->m_tcp),
+    reinterpret_cast<uv_stream_t *>(&client->m_tcp)
+  );
+
+  if (r) {
+    raise_warning("%s", php_uv_strerror(r));
+    return false;
+  }
+
+  return true;
+}
+
+static void php_uv_listen_cb(uv_stream_t* server, int status)
+{
+  UVResource *uv = static_cast<UVResource*>(server->data);
+  Array ret = Array::Create();
+
+  Variant resource = Resource(uv);
+  ret.append(resource);
+  ret.append(static_cast<int64_t>(status));
+
+  vm_call_user_func(uv->GetCallback(), ret);
+}
+
+static void HHVM_FUNCTION(uv_listen, const Resource& res_handle, int64_t backlog, Variant callable) {
+  UVResource *server = UVResource::Get(res_handle);
+  int r;
+//
+//  switch (server->m_type) {
+//    case TYPE_TCP:
+//    break;
+//    default:
+//      raise_warning("expects uv_tcp or uv_pipe resource.");
+//      return;
+//    break;
+//  }
+//
+
+  server->callback = callable;
+  r = uv_listen(
+      reinterpret_cast<uv_stream_t *>(&server->m_tcp),
+      static_cast<int>(backlog), php_uv_listen_cb);
+
+  if (r) {
+    raise_warning("%s", php_uv_strerror(r));
+  }
+  return;
+}
+
+static void HHVM_FUNCTION(uv_tcp_bind, const Resource& res_handle, const Resource& res_sockaddr) {
+  UVResource *server = UVResource::Get(res_handle);
+  UVResource *addr = UVResource::Get(res_sockaddr);
+  int r;
+
+  r = uv_tcp_bind(reinterpret_cast<uv_tcp_t*>(&server->m_tcp), addr->m_sockaddr.addr.ipv4);
+  if (r) {
+    raise_warning("%s", php_uv_strerror(r));
+  }
+  return;
+}
+
+static Variant HHVM_FUNCTION(uv_ip4_addr, String addr, int64_t port) {
+  UVResource *uv = NEWOBJ(UVResource)(addr, port);
+
+  return Resource(uv);
+}
+
+static uv_buf_t php_uv_read_alloc(uv_handle_t* handle, size_t suggested_size)
+{
+  return uv_buf_init(static_cast<char*>(malloc(suggested_size)), suggested_size);
+}
+
+static void php_uv_read_cb(uv_stream_t* handle, ssize_t nread, uv_buf_t buf)
+{
+  UVResource *uv = static_cast<UVResource*>(handle->data);
+  Array ret = Array::Create();
+
+  ret.append(Resource(uv));
+  ret.append(static_cast<int64_t>(nread));
+  ret.append(String(buf.base, nread, CopyString));
+
+  vm_call_user_func(uv->m_read_cb, ret);
+}
+
+static void HHVM_FUNCTION(uv_read_start, Resource res_handle, Variant callable) {
+  UVResource *uv = UVResource::Get(res_handle);
+  int r;
+
+  ResourceData *data = res_handle.get();
+  data->incRefCount();
+//  Object obj = callable.toObject();
+//  obj->incRefCount();
+  uv->m_read_cb = callable;
+
+  r = uv_read_start(reinterpret_cast<uv_stream_t*>(&uv->m_tcp),
+    php_uv_read_alloc,
+    php_uv_read_cb
+  );
+}
+
 
 namespace {
 static class UvExtension : public Extension {
@@ -425,6 +589,18 @@ static class UvExtension : public Extension {
   UvExtension() : Extension("uv") {}
 
   virtual void moduleInit() {
+    // Tcp
+    HHVM_FE(uv_tcp_init);
+    HHVM_FE(uv_tcp_nodelay);
+    HHVM_FE(uv_accept);
+    HHVM_FE(uv_tcp_bind);
+
+    HHVM_FE(uv_ip4_addr);
+
+    HHVM_FE(uv_listen);
+
+    HHVM_FE(uv_read_start);
+
     // Timer
     HHVM_FE(uv_timer_init);
     HHVM_FE(uv_timer_start);
