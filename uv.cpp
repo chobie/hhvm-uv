@@ -25,6 +25,10 @@ public:
   int m_is_response;
   int m_was_header_value;
   int m_finished;
+  Array *m_result;
+  Array m_headers;
+  char *m_tmp;
+  size_t m_tmp_len;
 
   explicit UVHttpParserResource(int64_t target);
   ~UVHttpParserResource();
@@ -146,39 +150,39 @@ static int on_headers_complete(http_parser *p)
 
 static int on_message_complete(http_parser *p)
 {
-//	php_http_parser_context *result = p->data;
-//	result->finished = 1;
-//
-//	if (result->tmp != NULL) {
-//		efree(result->tmp);
-//		result->tmp = NULL;
-//		result->tmp_len = 0;
-//	}
+  UVHttpParserResource *result = static_cast<UVHttpParserResource*>(p->data);
+  result->m_finished = 1;
 
-	return 0;
+  if (result->m_tmp != NULL) {
+    free(result->m_tmp);
+    result->m_tmp = NULL;
+    result->m_tmp_len = 0;
+  }
+
+  return 0;
 }
 
-//#define PHP_HTTP_PARSER_PARSE_URL(flag, name) \
-//  if (result->handle.field_set & (1 << flag)) { \
-//    const char *tmp_name = at+result->handle.field_data[flag].off; \
-//    int length = result->handle.field_data[flag].len; \
-//    add_assoc_stringl(data, #name, (char*)tmp_name, length, 1); \
-//  }
+#define PHP_HTTP_PARSER_PARSE_URL(flag, name) \
+  if (result->m_handle.field_set & (1 << flag)) { \
+    const char *tmp_name = at+result->m_handle.field_data[flag].off; \
+    int length = result->m_handle.field_data[flag].len; \
+    data->add(String(#name), String(const_cast<char*>(tmp_name), length, CopyString), true); \
+  }
 
 static int on_url_cb(http_parser *p, const char *at, size_t len)
 {
-//  php_http_parser_context *result = p->data;
-//  zval *data = result->data;
-//
-//  http_parser_parse_url(at, len, 0, &result->handle);
-//  add_assoc_stringl(data, "QUERY_STRING", (char*)at, len, 1);
-//
-//  PHP_HTTP_PARSER_PARSE_URL(UF_SCHEMA, SCHEME);
-//  PHP_HTTP_PARSER_PARSE_URL(UF_HOST, HOST);
-//  PHP_HTTP_PARSER_PARSE_URL(UF_PORT, PORT);
-//  PHP_HTTP_PARSER_PARSE_URL(UF_PATH, PATH);
-//  PHP_HTTP_PARSER_PARSE_URL(UF_QUERY, QUERY);
-//  PHP_HTTP_PARSER_PARSE_URL(UF_FRAGMENT, FRAGMENT);
+  UVHttpParserResource *result = static_cast<UVHttpParserResource*>(p->data);
+  Array *data = &result->m_headers;
+
+  http_parser_parse_url(at, len, 0, &result->m_handle);
+
+  data->add(String("QUERY_STRING"), String(const_cast<char*>(at), static_cast<int>(len), CopyString), true);
+  PHP_HTTP_PARSER_PARSE_URL(UF_SCHEMA, SCHEME);
+  PHP_HTTP_PARSER_PARSE_URL(UF_HOST, HOST);
+  PHP_HTTP_PARSER_PARSE_URL(UF_PORT, PORT);
+  PHP_HTTP_PARSER_PARSE_URL(UF_PATH, PATH);
+  PHP_HTTP_PARSER_PARSE_URL(UF_QUERY, QUERY);
+  PHP_HTTP_PARSER_PARSE_URL(UF_FRAGMENT, FRAGMENT);
 
   return 0;
 }
@@ -203,61 +207,54 @@ char *php_uv_strtoupper(char *s, size_t len)
   return s;
 }
 
-
 static int header_field_cb(http_parser *p, const char *at, size_t len)
 {
-//	php_http_parser_context *result = p->data;
-//
-//	if (result->was_header_value) {
-//		if (result->tmp != NULL) {
-//			efree(result->tmp);
-//			result->tmp = NULL;
-//			result->tmp_len = 0;
-//		}
-//		result->tmp = estrndup(at, len);
-//		php_uv_strtoupper(result->tmp, len);
-//		result->tmp_len = len;
-//	} else {
-//		result->tmp = erealloc(result->tmp, len + result->tmp_len + 1);
-//		memcpy(result->tmp + result->tmp_len, at, len);
-//		result->tmp[result->tmp_len + len] = '\0';
-//		result->tmp_len = result->tmp_len + len;
-//	}
-//
-//	result->was_header_value = 0;
-	return 0;
+  UVHttpParserResource *result = static_cast<UVHttpParserResource*>(p->data);
+
+  if (result->m_was_header_value) {
+    if (result->m_tmp != NULL) {
+      result->m_tmp = NULL;
+    }
+
+    result->m_tmp = strndup(at, len);
+    php_uv_strtoupper(result->m_tmp, len);
+    result->m_tmp_len = len;
+  } else {
+    result->m_tmp = static_cast<char*>(realloc(result->m_tmp, len + result->m_tmp_len + 1));
+    memcpy(result->m_tmp + result->m_tmp_len, at, len);
+    result->m_tmp[result->m_tmp_len + len] = '\0';
+    result->m_tmp_len = result->m_tmp_len + len;
+  }
+
+  result->m_was_header_value = 0;
+
+  return 0;
 }
 
 static int header_value_cb(http_parser *p, const char *at, size_t len)
 {
-//	php_http_parser_context *result = p->data;
-//	zval *data = result->headers;
-//
-//	if (result->was_header_value) {
-//		zval **element;
-//
-//		if (zend_hash_find(Z_ARRVAL_P(data), result->tmp, result->tmp_len+1, (void **)&element) == SUCCESS) {
-//			Z_STRVAL_PP(element) = erealloc(Z_STRVAL_PP(element), Z_STRLEN_PP(element) + len + 1);
-//			memcpy(Z_STRVAL_PP(element) + Z_STRLEN_PP(element), at, len);
-//
-//			Z_STRVAL_PP(element)[Z_STRLEN_PP(element)+len] = '\0';
-//			Z_STRLEN_PP(element) = Z_STRLEN_PP(element) + len;
-//		}
-//	} else {
-//		add_assoc_stringl(data, result->tmp, (char*)at, len, 1);
-//	}
-//
-//	result->was_header_value = 1;
-	return 0;
+  UVHttpParserResource *result = static_cast<UVHttpParserResource*>(p->data);
+
+  if (result->m_was_header_value) {
+    Variant rval = result->m_headers.rvalAt(String(result->m_tmp));
+
+    if (!rval.isNull()) {
+      String str = rval.toString();
+      str += String(const_cast<char*>(at), static_cast<int>(len), CopyString);
+    }
+  } else {
+    result->m_headers.add(String(result->m_tmp), String(const_cast<char*>(at), static_cast<int>(len), CopyString));
+  }
+
+  result->m_was_header_value = 1;
+  return 0;
 }
 
 static int on_body_cb(http_parser *p, const char *at, size_t len)
 {
-//  php_http_parser_context *result = p->data;
-//  zval *data = result->headers;
-//
-//  add_assoc_stringl(data, "BODY", (char*)at, len,  1);
-//
+  UVHttpParserResource *result = static_cast<UVHttpParserResource*>(p->data);
+  result->m_headers.add(String("BODY"), String(const_cast<char*>(at), static_cast<int>(len), CopyString));
+
   return 0;
 }
 /* end of callback */
@@ -272,6 +269,7 @@ UVHttpParserResource::UVHttpParserResource(int64_t target)
     m_is_response = 0;
   }
 
+  m_headers = Array::Create();
   memset(&m_handle, 0, sizeof(struct http_parser_url));
 
   /* setup callback */
@@ -283,7 +281,6 @@ UVHttpParserResource::UVHttpParserResource(int64_t target)
   m_settings.on_body = on_body_cb;
   m_settings.on_headers_complete = on_headers_complete;
   m_settings.on_message_complete = on_message_complete;
-
 }
 
 UVHttpParserResource::~UVHttpParserResource() {
@@ -382,17 +379,43 @@ static Variant HHVM_FUNCTION(uv_http_parser_init, int64_t type) {
   }
 
   parser = NEWOBJ(UVHttpParserResource)(type);
+
   return Resource(parser);
 }
 
-static Variant HHVM_FUNCTION(uv_http_parser_execute, const Resource& res_parser, const String& body, const Array& result) {
-  Variant retval;
+static Variant HHVM_FUNCTION(uv_http_parser_execute, const Resource& res_parser, const String& body, VRefParam arr /* = null */) {
+  Array result = Array::Create();
   UVHttpParserResource *parser = UVHttpParserResource::Get(res_parser);
   size_t nparsed = 0;
+  char version_buffer[4] = {0};
 
+  if (parser->m_finished == 1) {
+    raise_notice("passed uv_parser resource has already finished.");
+    return false;
+  }
+
+  parser->m_result = &result;
+  parser->m_parser.data = parser;
   nparsed = http_parser_execute(&parser->m_parser, &parser->m_settings, body.c_str(), body.length());
 
-  return retval;
+  if (nparsed != body.length()) {
+    // TODO(chobie): raise an exception
+    return false;
+  }
+
+  if (parser->m_is_response == 0) {
+    result.add(String("REQUEST_METHOD"), String(const_cast<char*>(http_method_str(static_cast<http_method>(parser->m_parser.method)))));
+  } else {
+    result.add(String("STATUS_CODE"), static_cast<int64_t>(parser->m_parser.status_code));
+  }
+  result.add(String("UPGRADE"), static_cast<int64_t>(parser->m_parser.upgrade));
+
+  snprintf(version_buffer, 4, "%d.%d", parser->m_parser.http_major, parser->m_parser.http_minor);
+  result.add(String("VERSION"), String(version_buffer));
+  result.add(String("HEADERS"), parser->m_headers);
+
+  arr = result;
+  return true;
 }
 
 
