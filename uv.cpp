@@ -356,6 +356,11 @@ static void HHVM_FUNCTION(uv_run) {
   return;
 }
 
+static int64_t HHVM_FUNCTION(uv_now, const Resource& res_loop) {
+  uv_loop_t *loop = uv_default_loop();
+  return static_cast<int64_t>(uv_now(loop));
+}
+
 static Variant HHVM_FUNCTION(uv_timer_init, const Resource& res_loop) {
   UVResource *uv = nullptr;
   uv_loop_t *loop = NULL;
@@ -385,6 +390,7 @@ static void php_uv_timer_cb(uv_timer_t *handle, int status)
 
   Variant resource = Resource(uv);
   ret.append(resource);
+  ret.append(status);
 
   vm_call_user_func(uv->GetCallback(), ret);
 }
@@ -720,6 +726,8 @@ static class UvExtension : public Extension {
     HHVM_FE(uv_write);
     HHVM_FE(uv_shutdown);
     HHVM_FE(uv_close);
+
+    HHVM_FE(uv_now);
 
     // Timer
     HHVM_FE(uv_timer_init);

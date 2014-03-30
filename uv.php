@@ -59,3 +59,6 @@ function uv_close(resource $handle, mixed $callable = NULL): void;
 
 <<__Native>>
 function uv_write(resource $handle, string $buffer, mixed $callable = NULL): void;
+
+<<__Native>>
+function uv_now(resource $loop = NULL): int;
