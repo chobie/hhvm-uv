@@ -231,7 +231,7 @@ static int on_message_complete(http_parser *p)
 static int on_url_cb(http_parser *p, const char *at, size_t len)
 {
   UVHttpParserResource *result = static_cast<UVHttpParserResource*>(p->data);
-  Array *data = &result->m_headers;
+  Array *data = result->m_result;
 
   http_parser_parse_url(at, len, 0, &result->m_handle);
 
