@@ -111,9 +111,7 @@ UVResource *UVResource::Get(const Variant& resource) {
         return nullptr;
     }
 
-    UVResource *uv = resource.toResource().getTyped<UVResource>
-        (!RuntimeOption::ThrowBadTypeExceptions,
-         !RuntimeOption::ThrowBadTypeExceptions);
+    UVResource *uv = resource.toResource().getTyped<UVResource>();
     return uv;
 }
 const Variant& UVResource::GetCallback() {
@@ -176,9 +174,7 @@ UVHttpParserResource *UVHttpParserResource::Get(const Variant& resource) {
         return nullptr;
     }
 
-    UVHttpParserResource *uv = resource.toResource().getTyped<UVHttpParserResource>
-        (!RuntimeOption::ThrowBadTypeExceptions,
-         !RuntimeOption::ThrowBadTypeExceptions);
+    UVHttpParserResource *uv = resource.toResource().getTyped<UVHttpParserResource>();
     return uv;
 }
 

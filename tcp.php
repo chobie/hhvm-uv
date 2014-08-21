@@ -260,7 +260,8 @@ class HttpEngineOnePointOne
             $closure($result, $response);
         }
 
-        if ($result['HEADERS']['CONNECTION'] == "close") {
+        if ( isset($result['HEADERS']['CONNECTION']) &&
+                $result['HEADERS']['CONNECTION'] === "close") {
             $client->shouldClose(true);
         }
     }
@@ -373,6 +374,8 @@ class HttpServer
                         //echo "shouldClose\n";
                         uv_shutdown($socket, array($this, "onShutdown"));
                         return;
+                    } else {
+                        uv_close($socket, array($this, "onClose"));
                     }
                 } catch (Exception $e) {
                     echo $e->getMessage();
