@@ -6,6 +6,6 @@ INCLUDE_DIRECTORIES(http-parser)
 SET(CMAKE_CXX_FLAGS_DEBUG "-g -pg -O0")
 
 HHVM_EXTENSION(uv uv.cpp http-parser/http_parser.c)
-HHVM_SYSTEMLIB(uv uv.php)
+HHVM_SYSTEMLIB(uv ext_uv.php)
 
 TARGET_LINK_LIBRARIES(uv ${UV_LIBRARY})
